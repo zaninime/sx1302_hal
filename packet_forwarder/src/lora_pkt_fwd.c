@@ -44,6 +44,8 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 #include <arpa/inet.h>      /* IP address conversion stuff */
 #include <netdb.h>          /* gai_strerror */
 
+#include <sys/wait.h>       /* waitpid */
+
 #include <pthread.h>
 
 #include "trace.h"
@@ -299,6 +301,7 @@ void thread_jit(void);
 void thread_gps(void);
 void thread_valid(void);
 void thread_spectral_scan(void);
+void run_reset_script_or_fail(bool);
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE FUNCTIONS DEFINITION ----------------------------------------- */
@@ -1640,11 +1643,7 @@ int main(int argc, char ** argv)
     freeaddrinfo(result);
 
     if (com_type == LGW_COM_SPI) {
-        /* Board reset */
-        if (system("./reset_lgw.sh start") != 0) {
-            printf("ERROR: failed to reset SX1302, check your reset_lgw.sh script\n");
-            exit(EXIT_FAILURE);
-        }
+        run_reset_script_or_fail(true);
     }
 
     for (l = 0; l < LGW_IF_CHAIN_NB; l++) {
@@ -1938,11 +1937,7 @@ int main(int argc, char ** argv)
     }
 
     if (com_type == LGW_COM_SPI) {
-        /* Board reset */
-        if (system("./reset_lgw.sh stop") != 0) {
-            printf("ERROR: failed to reset SX1302, check your reset_lgw.sh script\n");
-            exit(EXIT_FAILURE);
-        }
+        run_reset_script_or_fail(false);
     }
 
     MSG("INFO: Exiting packet forwarder program\n");
@@ -3681,6 +3676,47 @@ void thread_spectral_scan(void) {
         }
     }
     printf("\nINFO: End of Spectral Scan thread\n");
+}
+
+void run_reset_script_or_fail(bool start) {
+    char *env_var_name = "RESET_SCRIPT_PATH";
+
+    char *found_env = getenv(env_var_name);
+
+    if(found_env == NULL) {
+        printf("ERROR: The environment variable %s is not set\n", env_var_name);
+        exit(EXIT_FAILURE);
+    }
+
+    char *reset_script_path = strdup(found_env);
+
+    pid_t pid = fork();
+
+    if (pid == 0) {
+        execlp(reset_script_path, reset_script_path, start ? "start" : "stop", NULL);
+        perror("ERROR: call to the reset script failed");
+        exit(EXIT_FAILURE);
+    } else if (pid > 0) {
+        free(reset_script_path);
+        siginfo_t child_info;
+        waitid(P_PID, pid, &child_info, WEXITED);
+
+        if (child_info.si_code != CLD_EXITED) {
+            puts("ERROR: Abnormal termination of reset script");
+            exit(EXIT_FAILURE);
+        }
+
+        if (child_info.si_status != 0) {
+            printf("ERROR: Reset script was not successful and exited with code %d\n", child_info.si_status);
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        perror("ERROR: Can't fork to execute the reset script");
+        free(reset_script_path);
+        exit(EXIT_FAILURE);
+    }
+
+    puts("INFO: Board reset successful");
 }
 
 /* --- EOF ------------------------------------------------------------------ */
